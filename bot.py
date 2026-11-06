@@ -7,81 +7,199 @@ from threading import Thread
 import datetime
 import pandas as pd
 import re
-import psycopg2 # Библиотека для работы с PostgreSQL
+import psycopg2
 
 TOKEN = os.getenv('TELEGRAM_TOKEN') 
-DB_URL = os.getenv('DATABASE_URL') # Ссылка на базу данных из секретов GitHub
+DB_URL = os.getenv('DATABASE_URL')
 FILE_PATH = '641-12.xlsx'
 
 bot = telebot.TeleBot(TOKEN)
 
-# --- РАБОТА С БАЗОЙ ДАННЫХ POSTGRESQL ---
+# Словарь для расшифровки предметов
+SUBJECTS = {
+    "ДсМ": "Дискретная математика",
+    "ЗГТ": "Защита государственной тайны",
+    "ИП": "Инженерная подготовка",
+    "ИЯ": "Иностранный язык",
+    "МАД": "Методы анализа данных",
+    "МП": "Методы программирования",
+    "ПП": "Психология и педагогика",
+    "РХБЗ": "Радиационная, химическая и биологическая защита",
+    "СУБД": "Системы управления базами данных",
+    "ФП": "Физическая подготовка",
+    "Э": "Экономика"
+}
+
+WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+
+# --- РАБОТА С БАЗОЙ ДАННЫХ ---
 def init_db():
-    """Создает таблицу пользователей, если её еще нет"""
     if not DB_URL:
         return
-    with psycopg2.connect(DB_URL) as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    chat_id BIGINT PRIMARY KEY
-                );
-            """)
-            conn.commit()
+    try:
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        chat_id BIGINT PRIMARY KEY
+                    );
+                """)
+                conn.commit()
+    except Exception as e:
+        print(f"Ошибка инициализации БД: {e}")
 
 def add_user(chat_id):
-    """Добавляет нового пользователя в базу"""
     if not DB_URL:
         return
-    with psycopg2.connect(DB_URL) as conn:
-        with conn.cursor() as cur:
-            # ON CONFLICT DO NOTHING защищает от дубликатов, если пользователь нажмет /start дважды
-            cur.execute("INSERT INTO users (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING;", (chat_id,))
-            conn.commit()
+    try:
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO users (chat_id) VALUES (%s) ON CONFLICT (chat_id) DO NOTHING;", (chat_id,))
+                conn.commit()
+    except Exception as e:
+        print(f"Ошибка добавления пользователя: {e}")
 
 def get_all_users():
-    """Получает список всех ID пользователей"""
     if not DB_URL:
         return []
-    with psycopg2.connect(DB_URL) as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT chat_id FROM users;")
-            return [row[0] for row in cur.fetchall()]
+    try:
+        with psycopg2.connect(DB_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT chat_id FROM users;")
+                return [row[0] for row in cur.fetchall()]
+    except Exception as e:
+        print(f"Ошибка получения пользователей: {e}")
+        return []
 
-# Инициализируем базу при запуске бота
-init_db()
+# --- ЗАГРУЗКА РАСПИСАНИЯ ---
+def load_schedule(file_path):
+    df = pd.read_excel(file_path, header=None)
+    sched = {}
+    day_blocks = [(5, 6, 9), (10, 11, 14), (15, 16, 19), (20, 21, 24), (25, 26, 29), (30, 31, 33)]
+    
+    for col in range(3, df.shape[1]):
+        for (date_row, start_row, end_row) in day_blocks:
+            date_val = df.iloc[date_row, col]
+            if pd.notnull(date_val) and hasattr(date_val, 'strftime'):
+                date_str = date_val.strftime('%Y-%m-%d')
+                
+                day_schedule = []
+                day_seminars_names = set()
+                day_seminars_full = []
+                day_practices_full = []
+                
+                for r in range(start_row, end_row + 1):
+                    class_val = df.iloc[r, col]
+                    time_val = df.iloc[r, 2]
+                    
+                    if pd.notnull(class_val):
+                        class_text = str(class_val).strip().replace('\n', ' ')
+                        if class_text not in ('', 'NaN', 'nan', 'ПВ', 'ОП', 'Отп', 'Н'):
+                            
+                            is_seminar = class_text.startswith('С/') or class_text.startswith('С ')
+                            is_practice = class_text.startswith('П/') or class_text.startswith('П ')
+                            
+                            for abbr, full in SUBJECTS.items():
+                                if re.search(rf'\b{abbr}\b', class_text):
+                                    class_text = re.sub(rf'\b{abbr}\b', full, class_text)
+                                    if is_seminar:
+                                        day_seminars_names.add(full)
+                            
+                            if is_seminar:
+                                formatted_class = f"👨‍🏫 ⏱ <b>{time_val}</b>: {class_text}"
+                                day_seminars_full.append(formatted_class)
+                            elif is_practice:
+                                formatted_class = f"🛠 ⏱ <b>{time_val}</b>: {class_text}"
+                                day_practices_full.append(formatted_class)
+                            else:
+                                formatted_class = f"⏱ <b>{time_val}</b>: {class_text}"
+                                
+                            day_schedule.append(formatted_class)
+                                
+                if day_schedule:
+                    sched[date_str] = {
+                        'text': "\n\n".join(day_schedule),
+                        'seminars_names': list(day_seminars_names),
+                        'seminars_full': day_seminars_full,
+                        'practices_full': day_practices_full
+                    }
+    return sched
 
+my_schedule = load_schedule(FILE_PATH)
+print(f"✅ Расписание загружено: найдено {len(my_schedule)} учебных дней.")
 
-# --- ОБНОВЛЕННЫЕ ФУНКЦИИ РАССЫЛКИ ---
+def format_message(date_str, title_prefix):
+    if date_str in my_schedule:
+        schedule_text = my_schedule[date_str]['text']
+        seminars = my_schedule[date_str]['seminars_names']
+        
+        msg = f"{title_prefix} <b>({date_str}):</b>\n\n{schedule_text}"
+        
+        if seminars:
+            msg += "\n\n❗️ <b>ОБРАТИТЕ ВНИМАНИЕ:</b>\nСегодня у вас семинар(ы) по предметам:\n🔸 " + "\n🔸 ".join(seminars)
+        return msg
+    return None
+
+def get_weekly_events(event_type):
+    today = datetime.datetime.now()
+    monday = today - datetime.timedelta(days=today.weekday())
+    
+    events_text = []
+    for i in range(7):
+        curr_date = monday + datetime.timedelta(days=i)
+        date_str = curr_date.strftime('%Y-%m-%d')
+        
+        if date_str in my_schedule:
+            day_events = my_schedule[date_str].get(event_type, [])
+            if day_events:
+                wd = WEEKDAYS[i]
+                events_text.append(f"📅 <b>{wd} ({date_str})</b>\n" + "\n".join(day_events))
+                
+    if events_text:
+        return "\n\n".join(events_text)
+    return None
+
+# --- АВТОМАТИЧЕСКАЯ РАССЫЛКА ---
 def send_schedule_tomorrow():
-    tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-    msg = format_message(tomorrow, "🔔 Расписание на завтра")
-    if msg:
-        users = get_all_users()
-        for user_id in users:
-            try:
-                bot.send_message(user_id, msg, parse_mode='HTML')
-            except Exception as e:
-                # Если человек заблокировал бота, просто выводим ошибку и идем дальше
-                print(f"Ошибка отправки пользователю {user_id}: {e}")
+    try:
+        tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+        msg = format_message(tomorrow, "🔔 Расписание на завтра")
+        if msg:
+            for user_id in get_all_users():
+                try:
+                    bot.send_message(user_id, msg, parse_mode='HTML')
+                except Exception as e:
+                    print(f"Ошибка отправки пользователю {user_id}: {e}")
+    except Exception as e:
+        print(f"Ошибка в send_schedule_tomorrow: {e}")
 
 def send_schedule_today():
-    today = datetime.datetime.now().strftime('%Y-%m-%d')
-    msg = format_message(today, "⏰ Доброе утро! Расписание на сегодня")
-    if msg:
-        users = get_all_users()
-        for user_id in users:
-            try:
-                bot.send_message(user_id, msg, parse_mode='HTML')
-            except Exception as e:
-                print(f"Ошибка отправки пользователю {user_id}: {e}")
+    try:
+        today = datetime.datetime.now().strftime('%Y-%m-%d')
+        msg = format_message(today, "⏰ Доброе утро! Расписание на сегодня")
+        if msg:
+            for user_id in get_all_users():
+                try:
+                    bot.send_message(user_id, msg, parse_mode='HTML')
+                except Exception as e:
+                    print(f"Ошибка отправки пользователю {user_id}: {e}")
+    except Exception as e:
+        print(f"Ошибка в send_schedule_today: {e}")
 
-# ... (таймеры schedule оставляем без изменений) ...
+schedule.every().day.at("20:00").do(send_schedule_tomorrow)
+schedule.every().day.at("07:00").do(send_schedule_today)
 
-# --- ОБНОВЛЕННАЯ КОМАНДА /START ---
+def schedule_checker():
+    while True:
+        try:
+            schedule.run_pending()
+        except Exception as e:
+            print(f"Ошибка в таймере: {e}")
+        time.sleep(1)
+
+# --- ОБРАБОТЧИКИ СООБЩЕНИЙ ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    # Сохраняем chat_id пользователя в базу данных
     add_user(message.chat.id)
     
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -97,8 +215,6 @@ def send_welcome(message):
     markup.add(btn_practices)
     
     bot.reply_to(message, "Привет! Я бот с расписанием. Я автоматически присылаю уведомления в 20:00 и 07:00.\nВоспользуйтесь кнопками ниже 👇", reply_markup=markup)
-
-# ... (остальные функции handle_text и polling оставляем без изменений) ...
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
@@ -136,21 +252,9 @@ def handle_text(message):
             
     else:
         bot.reply_to(message, "Пожалуйста, используйте кнопки внизу экрана 👇")
-def schedule_checker():
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
 
-if __name__ == "__main__":
-    if not TOKEN:
-        print("ОШИБКА: Токен не найден. Убедитесь, что вы добавили TELEGRAM_TOKEN в Secrets and variables на GitHub.")
-    else:
-        Thread(target=schedule_checker, daemon=True).start()
-        print("Бот запущен и ждёт...")
-        bot.polling(none_stop=True)
 if __name__ == "__main__":
     init_db()
     Thread(target=schedule_checker, daemon=True).start()
     print("Бот запущен и ждёт...")
     bot.polling(none_stop=True)
-
