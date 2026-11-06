@@ -15,7 +15,6 @@ FILE_PATH = '641-12.xlsx'
 
 bot = telebot.TeleBot(TOKEN)
 
-# Словарь для расшифровки предметов
 SUBJECTS = {
     "ДсМ": "Дискретная математика",
     "ЗГТ": "Защита государственной тайны",
@@ -32,7 +31,6 @@ SUBJECTS = {
 
 WEEKDAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
 
-# --- РАБОТА С БАЗОЙ ДАННЫХ ---
 def init_db():
     if not DB_URL:
         return
@@ -71,7 +69,6 @@ def get_all_users():
         print(f"Ошибка получения пользователей: {e}")
         return []
 
-# --- ЗАГРУЗКА РАСПИСАНИЯ ---
 def load_schedule(file_path):
     df = pd.read_excel(file_path, header=None)
     sched = {}
@@ -159,7 +156,6 @@ def get_weekly_events(event_type):
         return "\n\n".join(events_text)
     return None
 
-# --- АВТОМАТИЧЕСКАЯ РАССЫЛКА ---
 def send_schedule_tomorrow():
     try:
         tomorrow = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
@@ -197,7 +193,6 @@ def schedule_checker():
             print(f"Ошибка в таймере: {e}")
         time.sleep(1)
 
-# --- ОБРАБОТЧИКИ СООБЩЕНИЙ ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     add_user(message.chat.id)
