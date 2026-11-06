@@ -136,6 +136,10 @@ def handle_text(message):
             
     else:
         bot.reply_to(message, "Пожалуйста, используйте кнопки внизу экрана 👇")
+def schedule_checker():
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
 
 if __name__ == "__main__":
     if not TOKEN:
@@ -144,3 +148,9 @@ if __name__ == "__main__":
         Thread(target=schedule_checker, daemon=True).start()
         print("Бот запущен и ждёт...")
         bot.polling(none_stop=True)
+if __name__ == "__main__":
+    init_db()
+    Thread(target=schedule_checker, daemon=True).start()
+    print("Бот запущен и ждёт...")
+    bot.polling(none_stop=True)
+
